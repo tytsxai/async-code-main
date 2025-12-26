@@ -10,10 +10,98 @@ from models import TaskStatus
 from database import DatabaseOperations
 from utils import run_ai_code_task_v2  # Updated function name
 from github import Github
+import re
 
 logger = logging.getLogger(__name__)
 
 tasks_bp = Blueprint('tasks', __name__)
+
+
+def _parse_github_repo(repo_url: str) -> str:
+    """Parse a GitHub repo URL into 'owner/name'. Supports https and git@ URLs."""
+    if not repo_url:
+        raise ValueError("repo_url 不能为空")
+    url = repo_url.strip()
+
+    https = re.match(r"^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", url)
+    if https:
+        owner, repo = https.groups()
+        return f"{owner}/{repo}"
+
+    ssh = re.match(r"^git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$", url)
+    if ssh:
+        owner, repo = ssh.groups()
+        return f"{owner}/{repo}"
+
+    raise ValueError(f"GitHub 地址格式无效: {repo_url}")
+
+
+@tasks_bp.route('/repo-branches', methods=['POST'])
+def get_repo_branches():
+    """列出仓库分支（只读），用于前端分支选择"""
+    try:
+        data = request.get_json() or {}
+        github_token = data.get('github_token')
+        repo_url = data.get('repo_url')
+
+        if not github_token or not repo_url:
+            return jsonify({'error': 'github_token 和 repo_url 为必填项'}), 400
+
+        repo_full_name = _parse_github_repo(repo_url)
+        gh = Github(github_token)
+        repo = gh.get_repo(repo_full_name)
+
+        branches = []
+        for b in repo.get_branches():
+            name = getattr(b, 'name', None)
+            if name:
+                branches.append(name)
+            if len(branches) >= 200:
+                break
+
+        return jsonify({
+            'status': 'success',
+            'repo': {
+                'name': repo.full_name,
+                'default_branch': repo.default_branch,
+                'branches': branches
+            }
+        })
+    except ValueError as e:
+        return jsonify({'status': 'error', 'error': str(e)}), 400
+    except Exception as e:
+        logger.error(f"获取仓库分支失败：{str(e)}")
+        return jsonify({'status': 'error', 'error': str(e)}), 403
+
+
+@tasks_bp.route('/local-db/export', methods=['GET'])
+def export_local_db():
+    """导出当前用户的本地数据库数据（仅本地模式可用）"""
+    user_id = g.user_id
+    if DatabaseOperations.is_supabase_enabled():
+        return jsonify({'status': 'error', 'error': '仅本地模式可用'}), 400
+
+    try:
+        data = DatabaseOperations.export_local_db(user_id)
+        return jsonify({'status': 'success', 'data': data})
+    except Exception as e:
+        logger.error(f"导出本地数据库失败：{str(e)}")
+        return jsonify({'status': 'error', 'error': str(e)}), 500
+
+
+@tasks_bp.route('/local-db/reset', methods=['POST'])
+def reset_local_db():
+    """清空当前用户的本地数据库数据（仅本地模式可用）"""
+    user_id = g.user_id
+    if DatabaseOperations.is_supabase_enabled():
+        return jsonify({'status': 'error', 'error': '仅本地模式可用'}), 400
+
+    try:
+        DatabaseOperations.reset_local_db(user_id)
+        return jsonify({'status': 'success'})
+    except Exception as e:
+        logger.error(f"清空本地数据库失败：{str(e)}")
+        return jsonify({'status': 'error', 'error': str(e)}), 500
 
 @tasks_bp.route('/start-task', methods=['POST'])
 def start_task():
@@ -58,6 +146,14 @@ def start_task():
         
         if not task:
             return jsonify({'error': '创建任务失败'}), 500
+
+        try:
+            DatabaseOperations.update_task_execution_metadata(task['id'], user_id, {
+                'stage': 'queued',
+                'stage_updated_at': time.time(),
+            })
+        except Exception:
+            pass
         
         # 在后台线程启动任务
         thread = threading.Thread(target=run_ai_code_task_v2, args=(task['id'], user_id, github_token))
@@ -100,6 +196,7 @@ def get_task_status(task_id):
             'task': {
                 'id': task['id'],
                 'status': task['status'],
+                'stage': (task.get('execution_metadata') or {}).get('stage'),
                 'prompt': prompt,
                 'repo_url': task['repo_url'],
                 'branch': task['target_branch'],
@@ -139,6 +236,7 @@ def list_all_tasks():
             formatted_tasks[str(task['id'])] = {
                 'id': task['id'],
                 'status': task['status'],
+                'stage': (task.get('execution_metadata') or {}).get('stage'),
                 'created_at': task['created_at'],
                 'prompt': prompt[:50] + '...' if len(prompt) > 50 else prompt,
                 'has_patch': bool(task.get('git_patch')),

@@ -11,11 +11,13 @@ import { CodeAgentSettings } from "@/components/code-agent-settings";
 import { ApiService } from "@/lib/api-service";
 import { useAuth } from "@/contexts/auth-context";
 import { ProtectedRoute } from "@/components/protected-route";
+import { isSupabaseConfigured } from "@/lib/supabase";
 
 import Link from "next/link";
 
 export default function SettingsPage() {
     const { user } = useAuth();
+    const supabaseEnabled = isSupabaseConfigured();
     const [githubToken, setGithubToken] = useState("");
     const [rememberToken, setRememberToken] = useState(false);
     const [tokenValidation, setTokenValidation] = useState<{status: string; user?: string; repo?: {name?: string; permissions?: {read?: boolean; write?: boolean; create_branches?: boolean; admin?: boolean}}; error?: string} | null>(null);
@@ -104,6 +106,44 @@ export default function SettingsPage() {
         } finally {
             setIsValidatingToken(false);
         }
+    };
+
+    const handleExportLocalDb = async () => {
+        if (!user?.id) {
+            toast.error('用户未登录');
+            return;
+        }
+        const result = await ApiService.exportLocalDb(user.id);
+        if (result.status !== 'success') {
+            toast.error(result.error || '导出失败');
+            return;
+        }
+
+        const payload = JSON.stringify(result.data, null, 2);
+        const blob = new Blob([payload], { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `async-code-local-db-${Date.now()}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+        toast.success('已导出本地数据');
+    };
+
+    const handleResetLocalDb = async () => {
+        if (!user?.id) {
+            toast.error('用户未登录');
+            return;
+        }
+        if (!confirm('确认清空本地模式下的项目与任务数据？此操作不可恢复。')) return;
+        const result = await ApiService.resetLocalDb(user.id);
+        if (result.status !== 'success') {
+            toast.error(result.error || '清空失败');
+            return;
+        }
+        toast.success('已清空本地数据');
     };
 
     return (
@@ -263,6 +303,24 @@ export default function SettingsPage() {
 
                     {/* Code Agent Settings */}
                     <CodeAgentSettings />
+
+                    {!supabaseEnabled && (
+                        <Card>
+                            <CardHeader>
+                                <CardTitle className="flex items-center gap-2">
+                                    <Code className="w-5 h-5" />
+                                    本地数据管理
+                                </CardTitle>
+                                <CardDescription>
+                                    仅在本地模式下可用：导出/清空当前用户的项目与任务数据
+                                </CardDescription>
+                            </CardHeader>
+                            <CardContent className="flex gap-3">
+                                <Button variant="outline" onClick={handleExportLocalDb}>导出本地数据</Button>
+                                <Button variant="destructive" onClick={handleResetLocalDb}>清空本地数据</Button>
+                            </CardContent>
+                        </Card>
+                    )}
 
                     {/* Token Creation Instructions */}
                     <Card className="bg-blue-50 border-blue-200">

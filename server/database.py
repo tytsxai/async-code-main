@@ -306,6 +306,63 @@ def _local_get_user_by_id(user_id: str) -> Optional[Dict]:
 class DatabaseOperations:
 
     @staticmethod
+    def is_supabase_enabled() -> bool:
+        return _USE_SUPABASE
+
+    @staticmethod
+    def export_local_db(user_id: str) -> Dict:
+        if _USE_SUPABASE:
+            raise RuntimeError('Supabase 模式下不支持本地数据库导出')
+        with _LOCAL_DB_LOCK:
+            db = _load_local_db()
+            projects = [p for p in db.get('projects', []) if p.get('user_id') == user_id]
+            tasks = [t for t in db.get('tasks', []) if t.get('user_id') == user_id]
+            user = (db.get('users', {}) or {}).get(user_id)
+            return {
+                'meta': db.get('meta', {}),
+                'user_id': user_id,
+                'user': user,
+                'projects': projects,
+                'tasks': tasks,
+            }
+
+    @staticmethod
+    def reset_local_db(user_id: str) -> Dict:
+        if _USE_SUPABASE:
+            raise RuntimeError('Supabase 模式下不支持本地数据库重置')
+
+        with _LOCAL_DB_LOCK:
+            db = _load_local_db()
+            db['projects'] = [p for p in db.get('projects', []) if p.get('user_id') != user_id]
+            db['tasks'] = [t for t in db.get('tasks', []) if t.get('user_id') != user_id]
+
+            users = db.get('users')
+            if isinstance(users, dict):
+                users.pop(user_id, None)
+                db['users'] = users
+
+            # 重算自增计数器，避免 ID 冲突
+            max_project_id = 0
+            for p in db.get('projects', []):
+                try:
+                    max_project_id = max(max_project_id, int(p.get('id') or 0))
+                except Exception:
+                    pass
+            max_task_id = 0
+            for t in db.get('tasks', []):
+                try:
+                    max_task_id = max(max_task_id, int(t.get('id') or 0))
+                except Exception:
+                    pass
+            db['meta'] = {
+                'project_id': max_project_id + 1,
+                'task_id': max_task_id + 1,
+            }
+
+            _save_local_db(db)
+            return {'status': 'success'}
+
+    @staticmethod
     def create_project(user_id: str, name: str, description: str, repo_url: str,
                       repo_name: str, repo_owner: str, settings: Dict = None) -> Dict:
         """创建新项目"""
@@ -449,6 +506,18 @@ class DatabaseOperations:
         except Exception as e:
             logger.error(f"更新任务 {task_id} 失败：{e}")
             raise
+
+    @staticmethod
+    def update_task_execution_metadata(task_id: int, user_id: str, metadata_updates: Dict) -> Optional[Dict]:
+        """合并更新 execution_metadata（避免覆盖已有字段）"""
+        task = DatabaseOperations.get_task_by_id(task_id, user_id)
+        if not task:
+            return None
+        meta = task.get('execution_metadata')
+        if not isinstance(meta, dict):
+            meta = {}
+        meta.update(metadata_updates or {})
+        return DatabaseOperations.update_task(task_id, user_id, {'execution_metadata': meta})
 
     @staticmethod
     def add_chat_message(task_id: int, user_id: str, role: str, content: str) -> Optional[Dict]:

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Github, GitBranch, Code2, ExternalLink, CheckCircle, Clock, XCircle, AlertCircle, FileText, Eye, GitCommit, Bell, Settings, LogOut, User, FolderGit2, Plus, Archive, ArchiveRestore } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -35,7 +35,12 @@ export default function Home() {
     const supabaseEnabled = isSupabaseConfigured();
     const [prompt, setPrompt] = useState("");
     const [selectedProject, setSelectedProject] = useState<string>("");
+    const [customRepoUrl, setCustomRepoUrl] = useState("");
     const [branch, setBranch] = useState("main");
+    const [availableBranches, setAvailableBranches] = useState<string[]>([]);
+    const [isLoadingBranches, setIsLoadingBranches] = useState(false);
+    const [branchLoadError, setBranchLoadError] = useState<string | null>(null);
+    const lastRepoUrlRef = useRef<string>("");
     const [githubToken, setGithubToken] = useState("");
     const [rememberToken, setRememberToken] = useState(false);
     const [model, setModel] = useState("codex");
@@ -76,8 +81,23 @@ export default function Home() {
                     setArchivedTaskIds(new Set());
                 }
             }
+
+            const savedCustomRepoUrl = localStorage.getItem('last-custom-repo-url');
+            if (savedCustomRepoUrl) {
+                setCustomRepoUrl(savedCustomRepoUrl);
+            }
         }
     }, []);
+
+    // 记住最近使用的自定义仓库地址
+    useEffect(() => {
+        if (typeof window === 'undefined') return;
+        if (!customRepoUrl.trim()) {
+            localStorage.removeItem('last-custom-repo-url');
+            return;
+        }
+        localStorage.setItem('last-custom-repo-url', customRepoUrl.trim());
+    }, [customRepoUrl]);
 
     // 加载初始数据
     useEffect(() => {
@@ -86,6 +106,58 @@ export default function Home() {
             loadTasks();
         }
     }, [user?.id]);
+
+    // 根据选择的仓库自动拉取分支列表（用于下拉选择）
+    useEffect(() => {
+        if (!user?.id) return;
+
+        let repoUrl = "";
+        if (selectedProject && selectedProject !== 'custom') {
+            const project = projects.find((p) => p.id.toString() === selectedProject);
+            repoUrl = project?.repo_url || "";
+        } else if (selectedProject === 'custom') {
+            repoUrl = customRepoUrl.trim();
+        }
+
+        const repoChanged = repoUrl !== lastRepoUrlRef.current;
+        if (repoChanged) {
+            lastRepoUrlRef.current = repoUrl;
+            setAvailableBranches([]);
+            setBranchLoadError(null);
+        }
+
+        if (!repoUrl || !githubToken.trim()) return;
+
+        try {
+            ApiService.parseGitHubUrl(repoUrl);
+        } catch {
+            return;
+        }
+
+        let cancelled = false;
+        (async () => {
+            setIsLoadingBranches(true);
+            const result = await ApiService.getRepoBranches(user.id, githubToken, repoUrl);
+            if (cancelled) return;
+
+            if (result.status === 'success') {
+                const branches = Array.isArray(result.repo?.branches) ? result.repo?.branches : [];
+                setAvailableBranches(branches);
+                const defaultBranch = result.repo?.default_branch;
+                if (repoChanged && defaultBranch) {
+                    setBranch(defaultBranch);
+                }
+            } else {
+                setBranchLoadError(result.error || '获取分支失败');
+                setAvailableBranches([]);
+            }
+            setIsLoadingBranches(false);
+        })();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [user?.id, selectedProject, customRepoUrl, projects, githubToken]);
 
     // GitHub 令牌变化时写入 sessionStorage；如选择“记住”则同步写入 localStorage
     useEffect(() => {
@@ -260,9 +332,22 @@ export default function Home() {
                 repoUrl = project.repo_url;
                 projectId = project.id;
             }
+        } else if (selectedProject === "custom") {
+            const url = customRepoUrl.trim();
+            if (!url) {
+                toast.error('请填写自定义仓库地址');
+                return;
+            }
+            try {
+                ApiService.parseGitHubUrl(url);
+            } catch (e) {
+                toast.error(`仓库地址无效：${String(e)}`);
+                return;
+            }
+            repoUrl = url;
+            projectId = undefined;
         } else {
-            // 自定义仓库地址 - 需要单独的输入框
-            toast.error('自定义仓库地址输入尚未实现，请先选择或创建项目。');
+            toast.error('请选择一个项目或填写自定义仓库地址');
             return;
         }
 
@@ -518,6 +603,19 @@ export default function Home() {
                                         )}
                                     </div>
 
+                                    {selectedProject === 'custom' && (
+                                        <div className="space-y-2">
+                                            <Label htmlFor="custom-repo">自定义仓库地址</Label>
+                                            <Input
+                                                id="custom-repo"
+                                                value={customRepoUrl}
+                                                onChange={(e) => setCustomRepoUrl(e.target.value)}
+                                                placeholder="https://github.com/owner/repo"
+                                            />
+                                            <p className="text-sm text-slate-500">目前仅支持 GitHub 仓库地址（HTTPS）。</p>
+                                        </div>
+                                    )}
+
                                     {/* Branch and Model in a responsive grid */}
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                         <div className="space-y-2">
@@ -525,13 +623,32 @@ export default function Home() {
                                                 <GitBranch className="w-3 h-3" />
                                                 分支
                                             </Label>
-                                            <Input
-                                                id="branch"
-                                                value={branch}
-                                                onChange={(e) => setBranch(e.target.value)}
-                                                placeholder="main"
-                                                className="w-full"
-                                            />
+                                            {availableBranches.length > 0 ? (
+                                                <Select value={branch} onValueChange={setBranch}>
+                                                    <SelectTrigger id="branch" className="w-full">
+                                                        <SelectValue placeholder="选择分支" />
+                                                    </SelectTrigger>
+                                                    <SelectContent>
+                                                        {availableBranches.map((b) => (
+                                                            <SelectItem key={b} value={b}>{b}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                            ) : (
+                                                <Input
+                                                    id="branch"
+                                                    value={branch}
+                                                    onChange={(e) => setBranch(e.target.value)}
+                                                    placeholder="main"
+                                                    className="w-full"
+                                                />
+                                            )}
+                                            {isLoadingBranches && (
+                                                <p className="text-sm text-slate-500">正在获取分支列表...</p>
+                                            )}
+                                            {!isLoadingBranches && branchLoadError && (
+                                                <p className="text-sm text-amber-700">{branchLoadError}</p>
+                                            )}
                                         </div>
                                         
                                         <div className="space-y-2">
@@ -688,6 +805,11 @@ export default function Home() {
                                                             <span>•</span>
                                                             <span>{new Date(task.created_at || '').toLocaleDateString()}</span>
                                                         </div>
+                                                        {(task.status === 'running' || task.status === 'pending') && (
+                                                            <div className="text-xs text-slate-600 mt-1">
+                                                                阶段：{((task as any).stage || (task as any).execution_metadata?.stage || '—')}
+                                                            </div>
+                                                        )}
                                                     </div>
                                                     <div className="flex items-center gap-2">
                                                         {task.status === "completed" && (

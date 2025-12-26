@@ -284,6 +284,104 @@ export class ApiService {
         }
     }
 
+    static async getRepoBranches(
+        userId: string,
+        token: string,
+        repoUrl: string
+    ): Promise<{
+        status: 'success' | 'error'
+        repo?: {
+            name?: string
+            default_branch?: string
+            branches?: string[]
+        }
+        error?: string
+    }> {
+        const authHeader = await getAuthHeader(userId)
+        const response = await fetch(`${API_BASE}/repo-branches`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...authHeader,
+            },
+            body: JSON.stringify({
+                github_token: token,
+                repo_url: repoUrl
+            })
+        })
+
+        let data: any = null
+        try {
+            data = await response.json()
+        } catch {
+            data = null
+        }
+
+        if (response.ok) {
+            return data
+        }
+
+        return {
+            status: 'error',
+            repo: data?.repo,
+            error: data?.error || '获取分支失败'
+        }
+    }
+
+    static async exportLocalDb(userId: string): Promise<{ status: 'success' | 'error'; data?: any; error?: string }> {
+        const authHeader = await getAuthHeader(userId)
+        const response = await fetch(`${API_BASE}/local-db/export`, {
+            method: 'GET',
+            headers: {
+                ...authHeader,
+            },
+        })
+
+        let data: any = null
+        try {
+            data = await response.json()
+        } catch {
+            data = null
+        }
+
+        if (response.ok) {
+            return data
+        }
+
+        return {
+            status: 'error',
+            error: data?.error || '导出失败'
+        }
+    }
+
+    static async resetLocalDb(userId: string): Promise<{ status: 'success' | 'error'; error?: string }> {
+        const authHeader = await getAuthHeader(userId)
+        const response = await fetch(`${API_BASE}/local-db/reset`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...authHeader,
+            },
+            body: JSON.stringify({}),
+        })
+
+        let data: any = null
+        try {
+            data = await response.json()
+        } catch {
+            data = null
+        }
+
+        if (response.ok) {
+            return data
+        }
+
+        return {
+            status: 'error',
+            error: data?.error || '清空失败'
+        }
+    }
+
     static async getGitDiff(userId: string, taskId: number): Promise<string> {
         const authHeader = await getAuthHeader(userId)
         const response = await fetch(`${API_BASE}/git-diff/${taskId}`, {
