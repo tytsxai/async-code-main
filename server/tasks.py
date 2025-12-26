@@ -465,9 +465,17 @@ def create_pull_request(task_id):
             return jsonify({'error': 'github_token 为必填项'}), 400
         
         logger.info(f"🚀 正在为任务 {task_id} 创建 PR")
-        
+
+        try:
+            DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                'pr_stage': 'starting',
+                'pr_stage_updated_at': time.time(),
+            })
+        except Exception:
+            pass
+
         # 从 URL 解析仓库信息
-        repo_parts = task['repo_url'].replace('https://github.com/', '').replace('.git', '')
+        repo_parts = _parse_github_repo(task['repo_url'])
         
         # 创建 GitHub 客户端
         g = Github(github_token)
@@ -485,12 +493,26 @@ def create_pull_request(task_id):
 
         # 若分支已存在则先删除，避免覆盖历史
         try:
+            try:
+                DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                    'pr_stage': 'cleanup_existing_branch',
+                    'pr_stage_updated_at': time.time(),
+                })
+            except Exception:
+                pass
             repo.get_git_ref(f"heads/{pr_branch}").delete()
             logger.info(f"🗑️ 已删除现有分支 '{pr_branch}'")
         except Exception:
             pass
 
         logger.info(f"📦 正在克隆仓库并应用补丁（git am）...")
+        try:
+            DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                'pr_stage': 'clone_apply_patch_push',
+                'pr_stage_updated_at': time.time(),
+            })
+        except Exception:
+            pass
         files_updated = _apply_patch_and_push_branch(
             repo_url=task['repo_url'],
             base_branch=base_branch,
@@ -498,6 +520,14 @@ def create_pull_request(task_id):
             patch_content=patch_content,
             github_token=github_token,
         )
+
+        try:
+            DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                'pr_stage': 'create_pull_request',
+                'pr_stage_updated_at': time.time(),
+            })
+        except Exception:
+            pass
         
         # 创建 Pull Request
         pr = repo.create_pull(
@@ -513,6 +543,14 @@ def create_pull_request(task_id):
             'pr_number': pr.number,
             'pr_url': pr.html_url
         })
+
+        try:
+            DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                'pr_stage': 'done',
+                'pr_stage_updated_at': time.time(),
+            })
+        except Exception:
+            pass
         
         logger.info(f"🎉 已创建 PR #{pr.number}：{pr.html_url}")
         
@@ -526,6 +564,14 @@ def create_pull_request(task_id):
         
     except Exception as e:
         logger.error(f"创建 PR 失败：{str(e)}")
+        try:
+            DatabaseOperations.update_task_execution_metadata(task_id, g.user_id, {
+                'pr_stage': 'failed',
+                'pr_stage_updated_at': time.time(),
+                'pr_error': str(e),
+            })
+        except Exception:
+            pass
         return jsonify({'error': str(e)}), 500
 
 # 旧任务迁移端点
@@ -584,9 +630,11 @@ def _redact(text: str, token: str) -> str:
     return text.replace(token, "***")
 
 
-def _run_git(args: list[str], cwd: str, github_token: str) -> str:
+def _run_git(args: list[str], cwd: str, github_token: str, extra_env: dict[str, str] | None = None) -> str:
     env = os.environ.copy()
     env["GIT_TERMINAL_PROMPT"] = "0"
+    if extra_env:
+        env.update(extra_env)
     proc = subprocess.run(
         args,
         cwd=cwd,
@@ -610,15 +658,30 @@ def _apply_patch_and_push_branch(
     patch_content: str,
     github_token: str,
 ) -> list[str]:
-    # PAT-based auth; keep token out of logs and error messages
-    clean_repo_url = (repo_url or "").strip().rstrip('/')
-    remote = clean_repo_url.replace('https://github.com/', f'https://{github_token}@github.com/')
-    if remote.endswith('.git'):
-        remote = remote[:-4]
-    remote = f"{remote}.git"
+    # Use https remote without embedding token; supply creds via GIT_ASKPASS to avoid leaks
+    repo_full_name = _parse_github_repo(repo_url)
+    remote = f"https://github.com/{repo_full_name}.git"
 
     with tempfile.TemporaryDirectory(prefix="async-code-pr-") as tmp:
         repo_dir = os.path.join(tmp, "repo")
+
+        askpass_path = os.path.join(tmp, "git_askpass.sh")
+        with open(askpass_path, "w", encoding="utf-8") as f:
+            f.write(
+                "#!/bin/sh\n"
+                "case \"$1\" in\n"
+                "  *Username*) echo \"$GIT_USERNAME\" ;;\n"
+                "  *) echo \"$GIT_PASSWORD\" ;;\n"
+                "esac\n"
+            )
+        os.chmod(askpass_path, 0o700)
+        git_env = {
+            "GIT_TERMINAL_PROMPT": "0",
+            "GIT_ASKPASS": askpass_path,
+            "GIT_USERNAME": "x-access-token",
+            "GIT_PASSWORD": github_token,
+        }
+
         _run_git(
             [
                 "git",
@@ -633,19 +696,20 @@ def _apply_patch_and_push_branch(
             ],
             cwd=tmp,
             github_token=github_token,
+            extra_env=git_env,
         )
 
-        _run_git(["git", "checkout", "-b", pr_branch], cwd=repo_dir, github_token=github_token)
+        _run_git(["git", "checkout", "-b", pr_branch], cwd=repo_dir, github_token=github_token, extra_env=git_env)
 
         patch_path = os.path.join(tmp, "changes.patch")
         with open(patch_path, "w", encoding="utf-8") as f:
             f.write(patch_content)
 
         try:
-            _run_git(["git", "am", "--3way", patch_path], cwd=repo_dir, github_token=github_token)
+            _run_git(["git", "am", "--3way", patch_path], cwd=repo_dir, github_token=github_token, extra_env=git_env)
         except Exception:
             try:
-                _run_git(["git", "am", "--abort"], cwd=repo_dir, github_token=github_token)
+                _run_git(["git", "am", "--abort"], cwd=repo_dir, github_token=github_token, extra_env=git_env)
             except Exception:
                 pass
             raise
@@ -654,6 +718,7 @@ def _apply_patch_and_push_branch(
             ["git", "show", "--name-only", "--pretty=format:"],
             cwd=repo_dir,
             github_token=github_token,
+            extra_env=git_env,
         )
         changed_files = [line.strip() for line in files.splitlines() if line.strip()]
 
@@ -661,6 +726,7 @@ def _apply_patch_and_push_branch(
             ["git", "push", "origin", f"HEAD:refs/heads/{pr_branch}"],
             cwd=repo_dir,
             github_token=github_token,
+            extra_env=git_env,
         )
 
         return changed_files
