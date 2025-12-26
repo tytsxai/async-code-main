@@ -1,0 +1,8 @@
+Flask==3.0.0
+Flask-CORS==4.0.0
+docker
+PyGithub
+requests
+python-dotenv
+supabase
+github3.py

@@ -1,0 +1,52 @@
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - ./async-code-web:/app
+      - /app/node_modules
+      - ./setup.sh:/app/setup.sh
+    depends_on:
+      - backend
+
+  backend:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=development
+      - FLASK_DEBUG=True
+    env_file:
+      - ./server/.env
+    volumes:
+      - ./server:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - claude-automation-build
+      - codex-automation-build
+
+  claude-automation-build:
+    build:
+      context: .
+      dockerfile: Dockerfile.claude-automation
+      tags:
+        - claude-code-automation:latest
+    command: ["echo", "Claude Code automation image built"]
+
+  codex-automation-build:
+    build:
+      context: .
+      dockerfile: Dockerfile.codex-automation
+      tags:
+        - codex-automation:latest
+    command: ["echo", "Codex automation image built"]
+
+volumes:
+  docker_socket:
