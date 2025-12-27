@@ -6,7 +6,7 @@ import uuid
 import time
 import threading
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from models import TaskStatus
 from database import DatabaseOperations
 from utils import run_ai_code_task_v2  # Updated function name
@@ -121,7 +121,7 @@ def start_task():
         chat_messages = [{
             'role': 'user',
             'content': prompt.strip(),
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': datetime.now(timezone.utc).isoformat()
         }]
         
         # 在数据库中创建任务
