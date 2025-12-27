@@ -610,9 +610,9 @@ export default function Home() {
                                                 id="custom-repo"
                                                 value={customRepoUrl}
                                                 onChange={(e) => setCustomRepoUrl(e.target.value)}
-                                                placeholder="https://github.com/owner/repo"
+                                                placeholder="https://github.com/owner/repo 或 git@github.com:owner/repo.git"
                                             />
-                                            <p className="text-sm text-slate-500">目前仅支持 GitHub 仓库地址（HTTPS）。</p>
+                                            <p className="text-sm text-slate-500">目前仅支持 GitHub 仓库地址（HTTPS / SSH）。</p>
                                         </div>
                                     )}
 

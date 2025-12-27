@@ -398,8 +398,14 @@ export class ApiService {
 
     // 工具函数
     static parseGitHubUrl(url: string): { owner: string, repo: string } {
-        const match = url.match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?(?:\/|$)/)
-        if (!match) throw new Error('GitHub 地址无效')
-        return { owner: match[1], repo: match[2] }
+        const httpsMatch = url.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?\/?$/)
+        if (httpsMatch) {
+            return { owner: httpsMatch[1], repo: httpsMatch[2] }
+        }
+        const sshMatch = url.match(/^git@github\.com:([^\/]+)\/([^\/]+?)(?:\.git)?$/)
+        if (sshMatch) {
+            return { owner: sshMatch[1], repo: sshMatch[2] }
+        }
+        throw new Error('GitHub 地址无效')
     }
 }

@@ -225,10 +225,10 @@ export default function SettingsPage() {
                                     type="url"
                                     value={repoUrl}
                                     onChange={(e) => setRepoUrl(e.target.value)}
-                                    placeholder="https://github.com/owner/repo"
+                                    placeholder="https://github.com/owner/repo 或 git@github.com:owner/repo.git"
                                 />
                                 <p className="text-sm text-slate-600">
-                                    使用任意可访问仓库来测试令牌权限
+                                    使用任意可访问仓库来测试令牌权限（支持 HTTPS / SSH）
                                 </p>
                             </div>
 

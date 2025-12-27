@@ -22,6 +22,23 @@ interface TaskWithProject extends Task {
     project?: Project
 }
 
+const formatMessageTimestamp = (value: unknown) => {
+    if (value === null || value === undefined || value === "") return "未知时间";
+    let date: Date;
+    if (typeof value === "number") {
+        const ms = value < 1e12 ? value * 1000 : value;
+        date = new Date(ms);
+    } else if (typeof value === "string" && /^\d+(\.\d+)?$/.test(value.trim())) {
+        const numeric = Number(value);
+        const ms = numeric < 1e12 ? numeric * 1000 : numeric;
+        date = new Date(ms);
+    } else {
+        date = new Date(value as string);
+    }
+    if (Number.isNaN(date.getTime())) return "未知时间";
+    return date.toLocaleString();
+};
+
 export default function TaskDetailPage() {
     const { user } = useAuth();
     const params = useParams();
@@ -415,7 +432,7 @@ export default function TaskDetailPage() {
                                                         {message.role === 'user' ? '你' : '助手'}
                                                     </Badge>
                                                     <span className="text-xs text-slate-500">
-                                                        {new Date(message.timestamp).toLocaleString()}
+                                                        {formatMessageTimestamp(message.timestamp)}
                                                     </span>
                                                 </div>
                                                 <p className="text-sm text-slate-700 whitespace-pre-wrap">
