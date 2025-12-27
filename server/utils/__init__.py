@@ -5,8 +5,6 @@ import fcntl
 import queue
 import atexit
 
-from .code_task_v2 import run_ai_code_task_v2, _run_ai_code_task_v2_internal
-
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -17,6 +15,17 @@ codex_execution_queue = queue.Queue()
 codex_execution_lock = threading.Lock()
 codex_worker_thread = None
 codex_lock_file = '/tmp/codex_global_lock'
+
+
+def _load_code_task_v2():
+    # Lazy import to avoid heavy dependencies at module import time.
+    from .code_task_v2 import run_ai_code_task_v2 as _run, _run_ai_code_task_v2_internal as _run_internal
+    return _run, _run_internal
+
+
+def run_ai_code_task_v2(*args, **kwargs):
+    _run, _ = _load_code_task_v2()
+    return _run(*args, **kwargs)
 
 def init_codex_sequential_processor():
     """初始化 Codex 顺序处理器"""
@@ -80,7 +89,8 @@ def queue_codex_task(task_id, user_id=None, github_token=None, is_v2=True):
 def _execute_codex_task_v2(task_id: int, user_id: str, github_token: str):
     """执行 Codex v2 任务 - 顺序处理器调用的内部方法"""
     # 实际执行逻辑
-    return _run_ai_code_task_v2_internal(task_id, user_id, github_token)
+    _, _run_internal = _load_code_task_v2()
+    return _run_internal(task_id, user_id, github_token)
 
 
 # 清理函数：停止工作线程

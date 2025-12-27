@@ -6,34 +6,18 @@ import uuid
 import time
 import threading
 import logging
+from datetime import datetime
 from models import TaskStatus
 from database import DatabaseOperations
 from utils import run_ai_code_task_v2  # Updated function name
+from utils.http import error_response
+from utils.prompt import get_latest_user_prompt
 from github import Github
-import re
+from utils.github import github_repo_full_name, normalize_github_url
 
 logger = logging.getLogger(__name__)
 
 tasks_bp = Blueprint('tasks', __name__)
-
-
-def _parse_github_repo(repo_url: str) -> str:
-    """Parse a GitHub repo URL into 'owner/name'. Supports https and git@ URLs."""
-    if not repo_url:
-        raise ValueError("repo_url 不能为空")
-    url = repo_url.strip()
-
-    https = re.match(r"^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", url)
-    if https:
-        owner, repo = https.groups()
-        return f"{owner}/{repo}"
-
-    ssh = re.match(r"^git@github\.com:([^/]+)/([^/]+?)(?:\.git)?$", url)
-    if ssh:
-        owner, repo = ssh.groups()
-        return f"{owner}/{repo}"
-
-    raise ValueError(f"GitHub 地址格式无效: {repo_url}")
 
 
 @tasks_bp.route('/repo-branches', methods=['POST'])
@@ -45,9 +29,9 @@ def get_repo_branches():
         repo_url = data.get('repo_url')
 
         if not github_token or not repo_url:
-            return jsonify({'error': 'github_token 和 repo_url 为必填项'}), 400
+            return error_response('github_token 和 repo_url 为必填项', 400)
 
-        repo_full_name = _parse_github_repo(repo_url)
+        repo_full_name = github_repo_full_name(repo_url)
         gh = Github(github_token)
         repo = gh.get_repo(repo_full_name)
 
@@ -68,10 +52,10 @@ def get_repo_branches():
             }
         })
     except ValueError as e:
-        return jsonify({'status': 'error', 'error': str(e)}), 400
+        return error_response(str(e), 400)
     except Exception as e:
         logger.error(f"获取仓库分支失败：{str(e)}")
-        return jsonify({'status': 'error', 'error': str(e)}), 403
+        return error_response(str(e), 403)
 
 
 @tasks_bp.route('/local-db/export', methods=['GET'])
@@ -79,14 +63,14 @@ def export_local_db():
     """导出当前用户的本地数据库数据（仅本地模式可用）"""
     user_id = g.user_id
     if DatabaseOperations.is_supabase_enabled():
-        return jsonify({'status': 'error', 'error': '仅本地模式可用'}), 400
+        return error_response('仅本地模式可用', 400)
 
     try:
         data = DatabaseOperations.export_local_db(user_id)
         return jsonify({'status': 'success', 'data': data})
     except Exception as e:
         logger.error(f"导出本地数据库失败：{str(e)}")
-        return jsonify({'status': 'error', 'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 
 @tasks_bp.route('/local-db/reset', methods=['POST'])
@@ -94,14 +78,14 @@ def reset_local_db():
     """清空当前用户的本地数据库数据（仅本地模式可用）"""
     user_id = g.user_id
     if DatabaseOperations.is_supabase_enabled():
-        return jsonify({'status': 'error', 'error': '仅本地模式可用'}), 400
+        return error_response('仅本地模式可用', 400)
 
     try:
         DatabaseOperations.reset_local_db(user_id)
         return jsonify({'status': 'success'})
     except Exception as e:
         logger.error(f"清空本地数据库失败：{str(e)}")
-        return jsonify({'status': 'error', 'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 @tasks_bp.route('/start-task', methods=['POST'])
 def start_task():
@@ -111,7 +95,7 @@ def start_task():
         user_id = g.user_id
             
         if not data:
-            return jsonify({'error': '未提供数据'}), 400
+            return error_response('未提供数据', 400)
             
         prompt = data.get('prompt')
         repo_url = data.get('repo_url')
@@ -121,17 +105,23 @@ def start_task():
         project_id = data.get('project_id')  # Optional project association
         
         if not all([prompt, repo_url, github_token]):
-            return jsonify({'error': 'prompt、repo_url 和 github_token 为必填项'}), 400
+            return error_response('prompt、repo_url 和 github_token 为必填项', 400)
         
         # 校验模型选择
         if model not in ['claude', 'codex']:
-            return jsonify({'error': 'model 必须为 "claude" 或 "codex"'}), 400
+            return error_response('model 必须为 "claude" 或 "codex"', 400)
         
+        # 规范化 GitHub 仓库地址（支持 SSH 输入）
+        try:
+            repo_url = normalize_github_url(repo_url)
+        except ValueError as e:
+            return error_response(str(e), 400)
+
         # 创建初始聊天消息
         chat_messages = [{
             'role': 'user',
             'content': prompt.strip(),
-            'timestamp': time.time()
+            'timestamp': datetime.utcnow().isoformat()
         }]
         
         # 在数据库中创建任务
@@ -145,7 +135,7 @@ def start_task():
         )
         
         if not task:
-            return jsonify({'error': '创建任务失败'}), 500
+            return error_response('创建任务失败', 500)
 
         try:
             DatabaseOperations.update_task_execution_metadata(task['id'], user_id, {
@@ -168,7 +158,7 @@ def start_task():
         
     except Exception as e:
         logger.error(f"启动任务失败：{str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 @tasks_bp.route('/task-status/<int:task_id>', methods=['GET'])
 def get_task_status(task_id):
@@ -179,17 +169,12 @@ def get_task_status(task_id):
         task = DatabaseOperations.get_task_by_id(task_id, user_id)
         if not task:
             logger.warning(f"🔍 前端轮询了未知任务：{task_id}")
-            return jsonify({'error': '未找到任务'}), 404
+            return error_response('未找到任务', 404)
         
         logger.info(f"📊 前端轮询任务 {task_id}：状态={task['status']}")
         
         # 从聊天消息中获取最新用户提示词
-        prompt = ""
-        if task.get('chat_messages'):
-            for msg in task['chat_messages']:
-                if msg.get('role') == 'user':
-                    prompt = msg.get('content', '')
-                    break
+        prompt = get_latest_user_prompt(task)
         
         return jsonify({
             'status': 'success',
@@ -211,7 +196,7 @@ def get_task_status(task_id):
         
     except Exception as e:
         logger.error(f"获取任务状态失败：{str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 @tasks_bp.route('/tasks', methods=['GET'])
 def list_all_tasks():
@@ -226,12 +211,7 @@ def list_all_tasks():
         formatted_tasks = {}
         for task in tasks:
             # 从聊天消息中获取最新用户提示词
-            prompt = ""
-            if task.get('chat_messages'):
-                for msg in task['chat_messages']:
-                    if msg.get('role') == 'user':
-                        prompt = msg.get('content', '')
-                        break
+            prompt = get_latest_user_prompt(task)
             
             formatted_tasks[str(task['id'])] = {
                 'id': task['id'],
@@ -254,7 +234,7 @@ def list_all_tasks():
         
     except Exception as e:
         logger.error(f"获取任务列表失败：{str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 @tasks_bp.route('/tasks/<int:task_id>', methods=['GET'])
 def get_task_details(task_id):
@@ -264,7 +244,7 @@ def get_task_details(task_id):
         
         task = DatabaseOperations.get_task_by_id(task_id, user_id)
         if not task:
-            return jsonify({'error': '未找到任务'}), 404
+            return error_response('未找到任务', 404)
         
         return jsonify({
             'status': 'success',
@@ -273,7 +253,7 @@ def get_task_details(task_id):
         
     except Exception as e:
         logger.error(f"获取任务详情失败：{str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 @tasks_bp.route('/tasks/<int:task_id>/chat', methods=['POST'])
 def add_chat_message(task_id):
@@ -283,20 +263,20 @@ def add_chat_message(task_id):
         user_id = g.user_id
         
         if not data:
-            return jsonify({'error': '未提供数据'}), 400
+            return error_response('未提供数据', 400)
         
         content = data.get('content')
         role = data.get('role', 'user')
         
         if not content:
-            return jsonify({'error': 'content 为必填项'}), 400
+            return error_response('content 为必填项', 400)
         
         if role not in ['user', 'assistant']:
-            return jsonify({'error': 'role 必须为 "user" 或 "assistant"'}), 400
+            return error_response('role 必须为 "user" 或 "assistant"', 400)
         
         task = DatabaseOperations.add_chat_message(task_id, user_id, role, content)
         if not task:
-            return jsonify({'error': '未找到任务'}), 404
+            return error_response('未找到任务', 404)
         
         return jsonify({
             'status': 'success',
@@ -305,7 +285,7 @@ def add_chat_message(task_id):
         
     except Exception as e:
         logger.error(f"添加聊天消息失败：{str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 @tasks_bp.route('/git-diff/<int:task_id>', methods=['GET'])
 def get_git_diff(task_id):
@@ -315,7 +295,7 @@ def get_git_diff(task_id):
         
         task = DatabaseOperations.get_task_by_id(task_id, user_id)
         if not task:
-            return jsonify({'error': '未找到任务'}), 404
+            return error_response('未找到任务', 404)
         
         return jsonify({
             'status': 'success',
@@ -325,18 +305,18 @@ def get_git_diff(task_id):
         
     except Exception as e:
         logger.error(f"获取 git diff 失败：{str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 @tasks_bp.route('/validate-token', methods=['POST'])
 def validate_github_token():
     """验证 GitHub 令牌并检查权限"""
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         github_token = data.get('github_token')
         repo_url = data.get('repo_url', '')
         
         if not github_token:
-            return jsonify({'error': 'github_token 为必填项'}), 400
+            return error_response('github_token 为必填项', 400)
         
         # 创建 GitHub 客户端
         g = Github(github_token)
@@ -357,7 +337,7 @@ def validate_github_token():
         repo_info = {}
         if repo_url:
             try:
-                repo_parts = repo_url.replace('https://github.com/', '').replace('.git', '')
+                repo_parts = github_repo_full_name(repo_url)
                 repo = g.get_repo(repo_parts)
                 
                 # 测试各项权限
@@ -413,6 +393,7 @@ def validate_github_token():
                 
             except Exception as repo_error:
                 return jsonify({
+                    'status': 'error',
                     'error': f'无法访问仓库：{str(repo_error)}',
                     'user': user.login
                 }), 403
@@ -426,7 +407,7 @@ def validate_github_token():
         
     except Exception as e:
         logger.error(f"令牌验证出错：{str(e)}")
-        return jsonify({'error': f'令牌验证失败：{str(e)}'}), 401
+        return error_response(f'令牌验证失败：{str(e)}', 401)
 
 @tasks_bp.route('/create-pr/<int:task_id>', methods=['POST'])
 def create_pull_request(task_id):
@@ -439,30 +420,25 @@ def create_pull_request(task_id):
         task = DatabaseOperations.get_task_by_id(task_id, user_id)
         if not task:
             logger.error(f"❌ 未找到任务 {task_id}")
-            return jsonify({'error': '未找到任务'}), 404
+            return error_response('未找到任务', 404)
         
         if task['status'] != 'completed':
-            return jsonify({'error': '任务尚未完成'}), 400
+            return error_response('任务尚未完成', 400)
             
         if not task.get('git_patch'):
-            return jsonify({'error': '该任务没有可用的补丁数据'}), 400
+            return error_response('该任务没有可用的补丁数据', 400)
         
         data = request.get_json() or {}
         
         # 从聊天消息获取提示词
-        prompt = ""
-        if task.get('chat_messages'):
-            for msg in task['chat_messages']:
-                if msg.get('role') == 'user':
-                    prompt = msg.get('content', '')
-                    break
+        prompt = get_latest_user_prompt(task)
         
         pr_title = data.get('title', f"Claude Code：{prompt[:50]}...")
         pr_body = data.get('body', f"由 Claude Code 生成的自动化改动。\n\n提示词：{prompt}\n\n变更文件：\n" + '\n'.join(f"- {f}" for f in task.get('changed_files', [])))
         github_token = data.get('github_token')
         
         if not github_token:
-            return jsonify({'error': 'github_token 为必填项'}), 400
+            return error_response('github_token 为必填项', 400)
         
         logger.info(f"🚀 正在为任务 {task_id} 创建 PR")
 
@@ -475,7 +451,7 @@ def create_pull_request(task_id):
             pass
 
         # 从 URL 解析仓库信息
-        repo_parts = _parse_github_repo(task['repo_url'])
+        repo_parts = github_repo_full_name(task['repo_url'])
         
         # 创建 GitHub 客户端
         g = Github(github_token)
@@ -489,7 +465,7 @@ def create_pull_request(task_id):
 
         patch_content = (task.get('git_patch') or '').strip()
         if not patch_content or patch_content == '未产生变更':
-            return jsonify({'error': '该任务未产生变更，无法创建 PR'}), 400
+            return error_response('该任务未产生变更，无法创建 PR', 400)
 
         # 若分支已存在则先删除，避免覆盖历史
         try:
@@ -572,7 +548,7 @@ def create_pull_request(task_id):
             })
         except Exception:
             pass
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 # 旧任务迁移端点
 @tasks_bp.route('/migrate-legacy-tasks', methods=['POST'])
@@ -619,7 +595,7 @@ def migrate_legacy_tasks():
         
     except Exception as e:
         logger.error(f"迁移旧任务失败：{str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 
 def _redact(text: str, token: str) -> str:
@@ -659,7 +635,7 @@ def _apply_patch_and_push_branch(
     github_token: str,
 ) -> list[str]:
     # Use https remote without embedding token; supply creds via GIT_ASKPASS to avoid leaks
-    repo_full_name = _parse_github_repo(repo_url)
+    repo_full_name = github_repo_full_name(repo_url)
     remote = f"https://github.com/{repo_full_name}.git"
 
     with tempfile.TemporaryDirectory(prefix="async-code-pr-") as tmp:
