@@ -4,6 +4,8 @@ import logging
 from github import Github
 from models import TaskStatus
 from utils import tasks
+from utils.http import error_response
+from utils.github import github_repo_full_name
 
 logger = logging.getLogger(__name__)
 
@@ -13,12 +15,12 @@ github_bp = Blueprint('github', __name__)
 def validate_github_token():
     """验证 GitHub 令牌并检查权限"""
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         github_token = data.get('github_token')
         repo_url = data.get('repo_url', '')
         
         if not github_token:
-            return jsonify({'error': 'github_token 为必填项'}), 400
+            return error_response('github_token 为必填项', 400)
         
         # 创建 GitHub 客户端
         g = Github(github_token)
@@ -40,7 +42,7 @@ def validate_github_token():
         repo_info = {}
         if repo_url:
             try:
-                repo_parts = repo_url.replace('https://github.com/', '').replace('.git', '')
+                repo_parts = github_repo_full_name(repo_url)
                 repo = g.get_repo(repo_parts)
                 
                 # 测试各项权限
@@ -96,6 +98,7 @@ def validate_github_token():
                 
             except Exception as repo_error:
                 return jsonify({
+                    'status': 'error',
                     'error': f'无法访问仓库：{str(repo_error)}',
                     'user': user.login
                 }), 403
@@ -109,7 +112,7 @@ def validate_github_token():
         
     except Exception as e:
         logger.error(f"令牌验证出错：{str(e)}")
-        return jsonify({'error': f'令牌验证失败：{str(e)}'}), 401
+        return error_response(f'令牌验证失败：{str(e)}', 401)
 
 @github_bp.route('/create-pr/<task_id>', methods=['POST'])
 def create_pull_request(task_id):
@@ -121,7 +124,8 @@ def create_pull_request(task_id):
         if task_id not in tasks:
             logger.error(f"❌ 未找到任务 {task_id}。可用任务：{list(tasks.keys())}")
             return jsonify({
-                'error': '未找到任务', 
+                'status': 'error',
+                'error': '未找到任务',
                 'task_id': task_id,
                 'available_tasks': list(tasks.keys())
             }), 404
@@ -129,10 +133,10 @@ def create_pull_request(task_id):
         task = tasks[task_id]
         
         if task['status'] != TaskStatus.COMPLETED:
-            return jsonify({'error': '任务尚未完成'}), 400
+            return error_response('任务尚未完成', 400)
             
         if not task.get('git_patch'):
-            return jsonify({'error': '该任务没有可用的补丁数据'}), 400
+            return error_response('该任务没有可用的补丁数据', 400)
         
         data = request.get_json() or {}
         pr_title = data.get('title', f"Claude Code：{task['prompt'][:50]}...")
@@ -141,7 +145,7 @@ def create_pull_request(task_id):
         logger.info(f"🚀 正在为任务 {task_id} 创建 PR")
         
         # 从 URL 解析仓库信息
-        repo_parts = task['repo_url'].replace('https://github.com/', '').replace('.git', '')
+        repo_parts = github_repo_full_name(task['repo_url'])
         
         # 创建 GitHub 客户端
         g = Github(task['github_token'])
@@ -188,7 +192,7 @@ def create_pull_request(task_id):
             else:
                 detailed_error = f"创建分支 '{pr_branch}' 失败：{branch_error}"
                 
-            return jsonify({'error': detailed_error}), 403
+            return error_response(detailed_error, 403)
         
         # 通过创建/更新文件应用补丁
         logger.info(f"📦 正在应用补丁，共 {len(task['changed_files'])} 个文件变更...")
@@ -198,7 +202,7 @@ def create_pull_request(task_id):
         files_to_update = apply_patch_to_github_repo(repo, pr_branch, patch_content, task)
         
         if not files_to_update:
-            return jsonify({'error': '应用补丁失败：未解析到文件变更'}), 500
+            return error_response('应用补丁失败：未解析到文件变更', 500)
         
         logger.info(f"✅ 补丁应用完成，更新了 {len(files_to_update)} 个文件")
         
@@ -222,7 +226,7 @@ def create_pull_request(task_id):
         
     except Exception as e:
         logger.error(f"创建 PR 失败：{str(e)}")
-        return jsonify({'error': str(e)}), 500
+        return error_response(str(e), 500)
 
 def apply_patch_to_github_repo(repo, branch, patch_content, task):
     """使用 GitHub API 将 git patch 应用到仓库"""

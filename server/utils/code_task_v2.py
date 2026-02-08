@@ -8,6 +8,7 @@ import time
 import random
 from datetime import datetime
 from database import DatabaseOperations
+from utils.prompt import get_latest_user_prompt
 import fcntl
 
 # 配置日志
@@ -15,11 +16,28 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Docker 客户端
-docker_client = docker.from_env()
+_docker_client = None
+
+
+def _get_docker_client():
+    global _docker_client
+    if _docker_client is not None:
+        return _docker_client
+    try:
+        _docker_client = docker.from_env()
+        return _docker_client
+    except Exception as e:
+        raise RuntimeError(f"Docker 不可用：{e}") from e
 
 def cleanup_orphaned_containers():
     """积极清理孤立的 AI 代码任务容器"""
     try:
+        try:
+            docker_client = _get_docker_client()
+        except Exception as e:
+            logger.warning(f"⚠️  Docker 不可用，跳过孤立容器清理：{e}")
+            return
+
         # 获取所有符合命名规则的容器
         containers = docker_client.containers.list(all=True, filters={'name': 'ai-code-task-'})
         orphaned_count = 0
@@ -92,6 +110,7 @@ def run_ai_code_task_v2(task_id: int, user_id: str, github_token: str):
 def _run_ai_code_task_v2_internal(task_id: int, user_id: str, github_token: str):
     """AI Code 自动化内部实现 - Claude 直接调用或 Codex 队列调用"""
     try:
+        codex_lock_handle = None
         # 启动新任务前清理孤立容器
         cleanup_orphaned_containers()
         
@@ -100,20 +119,31 @@ def _run_ai_code_task_v2_internal(task_id: int, user_id: str, github_token: str)
         if not task:
             logger.error(f"数据库中未找到任务 {task_id}")
             return
+
+        try:
+            DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                'stage': 'starting',
+                'stage_updated_at': time.time(),
+            })
+        except Exception:
+            pass
         
         # 更新任务状态为 running
         DatabaseOperations.update_task(task_id, user_id, {'status': 'running'})
+
+        try:
+            DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                'stage': 'running',
+                'stage_updated_at': time.time(),
+            })
+        except Exception:
+            pass
         
         model_name = task.get('agent', 'claude').upper()
         logger.info(f"🚀 开始 {model_name} Code 任务 {task_id}")
         
         # 从聊天消息获取提示词
-        prompt = ""
-        if task.get('chat_messages'):
-            for msg in task['chat_messages']:
-                if msg.get('role') == 'user':
-                    prompt = msg.get('content', '')
-                    break
+        prompt = get_latest_user_prompt(task)
         
         if not prompt:
             error_msg = "聊天消息中未找到用户提示词"
@@ -192,18 +222,26 @@ def _run_ai_code_task_v2_internal(task_id: int, user_id: str, github_token: str)
             
             # 使用文件锁防止 Codex 并行执行冲突
             lock_file_path = '/tmp/codex_execution_lock'
+            lock_file = None
             try:
                 logger.info(f"🔒 正在为任务 {task_id} 获取 Codex 执行锁")
-                with open(lock_file_path, 'w') as lock_file:
-                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    logger.info(f"✅ 已为任务 {task_id} 获取 Codex 执行锁")
-                    # 持有锁继续创建容器
+                lock_file = open(lock_file_path, 'w')
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                codex_lock_handle = lock_file
+                logger.info(f"✅ 已为任务 {task_id} 获取 Codex 执行锁")
+                # 持有锁继续创建容器
             except (IOError, OSError) as e:
                 logger.warning(f"⚠️  无法获取任务 {task_id} 的 Codex 执行锁：{e}")
                 # 若加锁失败则额外延迟
                 additional_delay = random.uniform(1.0, 3.0)
                 logger.info(f"🕐 因锁冲突增加额外 {additional_delay:.1f} 秒延迟")
                 time.sleep(additional_delay)
+                try:
+                    if lock_file:
+                        lock_file.close()
+                except Exception:
+                    pass
+                codex_lock_handle = None
         
         # 从 Supabase 的用户偏好中读取 Claude 凭据
         credentials_content = ""
@@ -243,10 +281,25 @@ def _run_ai_code_task_v2_internal(task_id: int, user_id: str, github_token: str)
 set -e
 echo "正在准备仓库..."
 
-# 使用鉴权克隆仓库
-# 将 GitHub 地址转换为令牌鉴权形式
-REPO_URL_WITH_TOKEN=$(echo "{task['repo_url']}" | sed "s|https://github.com/|https://{github_token}@github.com/|")
-git clone -b {task['target_branch']} "$REPO_URL_WITH_TOKEN" /workspace/repo
+# 使用鉴权克隆仓库（避免在 URL 中拼接 token，防止日志泄漏）
+REPO_URL="{task['repo_url']}"
+export GIT_TERMINAL_PROMPT=0
+export GIT_USERNAME="x-access-token"
+export GIT_PASSWORD="{github_token}"
+cat > /tmp/git_askpass.sh <<'GIT_ASKPASS_EOF'
+#!/bin/sh
+case "$1" in
+  *Username*) echo "$GIT_USERNAME" ;;
+  *) echo "$GIT_PASSWORD" ;;
+esac
+GIT_ASKPASS_EOF
+chmod 700 /tmp/git_askpass.sh
+export GIT_ASKPASS=/tmp/git_askpass.sh
+
+git clone -b {task['target_branch']} "$REPO_URL" /workspace/repo
+
+rm -f /tmp/git_askpass.sh
+unset GIT_PASSWORD
 cd /workspace/repo
 
 # 配置 git
@@ -296,7 +349,7 @@ if [ "{model_cli}" = "codex" ]; then
     echo "=== CODEX 调试信息 ==="
     echo "CODEX_QUIET_MODE: $CODEX_QUIET_MODE"
     echo "CODEX_UNSAFE_ALLOW_NO_SANDBOX: $CODEX_UNSAFE_ALLOW_NO_SANDBOX"
-    echo "OPENAI_API_KEY: $(echo $OPENAI_API_KEY | head -c 8)..."
+    if [ -n "$OPENAI_API_KEY" ]; then echo "OPENAI_API_KEY: [set]"; else echo "OPENAI_API_KEY: [missing]"; fi
     echo "使用官方 CODEX 参数：exec 子命令（非交互模式）"
     echo "======================="
     
@@ -569,39 +622,86 @@ exit 0
                 logger.info(f"📁 挂载 Codex 配置目录：{host_codex_dir} -> /root/.codex")
             else:
                 logger.info("📁 未设置 HOST_CODEX_DIR，跳过挂载 /root/.codex")
+
+        try:
+            docker_client = _get_docker_client()
+        except Exception as e:
+            DatabaseOperations.update_task(task_id, user_id, {
+                'status': 'failed',
+                'error': str(e)
+            })
+            try:
+                DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                    'stage': 'failed',
+                    'stage_updated_at': time.time(),
+                })
+            except Exception:
+                pass
+            if codex_lock_handle:
+                try:
+                    fcntl.flock(codex_lock_handle.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    codex_lock_handle.close()
+                except Exception:
+                    pass
+                codex_lock_handle = None
+            return
         
         # 启用更完善的冲突处理并重试创建容器
         container = None
         max_retries = 5  # Increased retries for better reliability
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"🔄 创建容器尝试 {attempt + 1}/{max_retries}")
-                container = docker_client.containers.run(**container_kwargs)
-                logger.info(f"✅ 容器创建成功：{container.id[:12]}（名称：{container_kwargs['name']}）")
-                break
-            except docker.errors.APIError as e:
-                error_msg = str(e)
-                if "Conflict" in error_msg and "already in use" in error_msg:
-                    # 通过生成新名称解决容器名冲突
-                    logger.warning(f"🔄 第 {attempt + 1} 次尝试发生容器名冲突，正在生成新名称...")
-                    new_name = f'ai-code-task-{task_id}-{int(time.time())}-{uuid.uuid4().hex[:8]}'
-                    container_kwargs['name'] = new_name
-                    logger.info(f"🆔 新容器名称：{new_name}")
-                    # 尝试清理冲突容器
-                    cleanup_orphaned_containers()
-                else:
-                    logger.warning(f"⚠️  第 {attempt + 1} 次尝试发生 Docker API 错误：{e}")
+        try:
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"🔄 创建容器尝试 {attempt + 1}/{max_retries}")
+                    container = docker_client.containers.run(**container_kwargs)
+                    logger.info(f"✅ 容器创建成功：{container.id[:12]}（名称：{container_kwargs['name']}）")
+                    break
+                except docker.errors.APIError as e:
+                    error_msg = str(e)
+                    if "Conflict" in error_msg and "already in use" in error_msg:
+                        # 通过生成新名称解决容器名冲突
+                        logger.warning(f"🔄 第 {attempt + 1} 次尝试发生容器名冲突，正在生成新名称...")
+                        new_name = f'ai-code-task-{task_id}-{int(time.time())}-{uuid.uuid4().hex[:8]}'
+                        container_kwargs['name'] = new_name
+                        logger.info(f"🆔 新容器名称：{new_name}")
+                        # 尝试清理冲突容器
+                        cleanup_orphaned_containers()
+                    else:
+                        logger.warning(f"⚠️  第 {attempt + 1} 次尝试发生 Docker API 错误：{e}")
+                        if attempt == max_retries - 1:
+                            raise Exception(f"在 {max_retries} 次尝试后仍无法创建容器：{e}")
+                    time.sleep(2 ** attempt)  # Exponential backoff
+                except Exception as e:
+                    logger.error(f"❌ 第 {attempt + 1} 次创建容器发生意外错误：{e}")
                     if attempt == max_retries - 1:
-                        raise Exception(f"在 {max_retries} 次尝试后仍无法创建容器：{e}")
-                time.sleep(2 ** attempt)  # Exponential backoff
-            except Exception as e:
-                logger.error(f"❌ 第 {attempt + 1} 次创建容器发生意外错误：{e}")
-                if attempt == max_retries - 1:
-                    raise
-                time.sleep(2 ** attempt)  # Exponential backoff
+                        raise
+                    time.sleep(2 ** attempt)  # Exponential backoff
+        finally:
+            if codex_lock_handle:
+                try:
+                    fcntl.flock(codex_lock_handle.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+                try:
+                    codex_lock_handle.close()
+                except Exception:
+                    pass
+                codex_lock_handle = None
         
         # 使用容器 ID 更新任务（v2）
         DatabaseOperations.update_task(task_id, user_id, {'container_id': container.id})
+
+        try:
+            DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                'stage': 'container_started',
+                'stage_updated_at': time.time(),
+                'container_id': container.id,
+            })
+        except Exception:
+            pass
         
         logger.info(f"⏳ 等待容器完成（超时：300 秒）...")
         
@@ -776,12 +876,18 @@ exit 0
                 'commit_hash': commit_hash,
                 'git_diff': '\n'.join(git_diff),
                 'git_patch': '\n'.join(git_patch),
-                'changed_files': changed_files,
-                'execution_metadata': {
-                    'file_changes': file_changes,
-                    'completed_at': datetime.now().isoformat()
-                }
+                'changed_files': changed_files
             })
+
+            try:
+                DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                    'stage': 'completed',
+                    'stage_updated_at': time.time(),
+                    'file_changes': file_changes,
+                    'completed_at': datetime.now().isoformat(),
+                })
+            except Exception:
+                pass
             
             logger.info(f"🎉 {model_name} 任务 {task_id} 完成！提交：{commit_hash[:8] if commit_hash else 'N/A'}，Diff 行数：{len(git_diff)}")
             
@@ -791,6 +897,14 @@ exit 0
                 'status': 'failed',
                 'error': f"容器退出码为 {result['StatusCode']}：{logs}"
             })
+
+            try:
+                DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                    'stage': 'failed',
+                    'stage_updated_at': time.time(),
+                })
+            except Exception:
+                pass
             logger.error(f"💥 {model_name} 任务 {task_id} 失败：{logs[:200]}...")
             
     except Exception as e:
@@ -802,7 +916,24 @@ exit 0
                 'status': 'failed',
                 'error': str(e)
             })
+
+            try:
+                DatabaseOperations.update_task_execution_metadata(task_id, user_id, {
+                    'stage': 'failed',
+                    'stage_updated_at': time.time(),
+                })
+            except Exception:
+                pass
         except:
             logger.error(f"异常后更新任务 {task_id} 状态失败")
         
         logger.error(f"🔄 {model_name} 任务 {task_id} 因异常失败：{str(e)}")
+        if codex_lock_handle:
+            try:
+                fcntl.flock(codex_lock_handle.fileno(), fcntl.LOCK_UN)
+            except Exception:
+                pass
+            try:
+                codex_lock_handle.close()
+            except Exception:
+                pass

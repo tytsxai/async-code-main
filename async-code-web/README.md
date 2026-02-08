@@ -16,6 +16,7 @@ npm run dev
 ```bash
 npm run lint
 npm run build
+npm run test
 ```
 
 更多使用说明请看仓库根目录 `README.md` 与 `GUIDE.md`。

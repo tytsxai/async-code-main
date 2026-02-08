@@ -9,7 +9,7 @@ export type User = Tables<'users'>
 export interface ChatMessage {
     role: 'user' | 'assistant'
     content: string
-    timestamp: string
+    timestamp: string // ISO 8601 string
 }
 
 // 合并视图的文件变更类型

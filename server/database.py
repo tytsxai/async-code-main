@@ -1,6 +1,6 @@
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 import json
 import threading
@@ -64,6 +64,10 @@ def _is_missing_or_placeholder(value: str, placeholders: set) -> bool:
     return value.strip() in placeholders
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 _SUPABASE_URL = (os.getenv('SUPABASE_URL') or '').strip()
 _SUPABASE_KEY = (os.getenv('SUPABASE_SERVICE_ROLE_KEY') or '').strip()
 _SUPABASE_DISABLED = os.getenv('SUPABASE_DISABLED', '').lower() in {'1', 'true', 'yes'}
@@ -90,7 +94,7 @@ def _local_create_project(user_id: str, name: str, description: str, repo_url: s
         for project in db['projects']:
             if project.get('user_id') == user_id and project.get('repo_url') == repo_url:
                 raise ValueError('该仓库已存在项目')
-        now = datetime.utcnow().isoformat()
+        now = _utc_now_iso()
         project = {
             'id': _next_id(db, 'project_id'),
             'user_id': user_id,
@@ -134,7 +138,7 @@ def _local_update_project(project_id: int, user_id: str, updates: Dict) -> Optio
                 updates = dict(updates or {})
                 updates.pop('id', None)
                 updates.pop('user_id', None)
-                updates.setdefault('updated_at', datetime.utcnow().isoformat())
+                updates.setdefault('updated_at', _utc_now_iso())
                 updated = {**project, **updates}
                 db['projects'][idx] = updated
                 _save_local_db(db)
@@ -162,7 +166,7 @@ def _local_create_task(user_id: str, project_id: int = None, repo_url: str = Non
                        chat_messages: List[Dict] = None) -> Dict:
     with _LOCAL_DB_LOCK:
         db = _load_local_db()
-        now = datetime.utcnow().isoformat()
+        now = _utc_now_iso()
         task = {
             'id': _next_id(db, 'task_id'),
             'user_id': user_id,
@@ -219,7 +223,7 @@ def _local_update_task(task_id: int, user_id: str, updates: Dict) -> Optional[Di
                 updates = dict(updates or {})
                 updates.pop('id', None)
                 updates.pop('user_id', None)
-                updates.setdefault('updated_at', datetime.utcnow().isoformat())
+                updates.setdefault('updated_at', _utc_now_iso())
                 updated = {**task, **updates}
                 db['tasks'][idx] = updated
                 _save_local_db(db)
@@ -240,7 +244,7 @@ def _local_get_task_by_legacy_id(legacy_id: str) -> Optional[Dict]:
 def _local_migrate_legacy_task(legacy_task: Dict, user_id: str) -> Optional[Dict]:
     with _LOCAL_DB_LOCK:
         db = _load_local_db()
-        now = datetime.utcnow().isoformat()
+        now = _utc_now_iso()
         task_data = {
             'user_id': user_id,
             'repo_url': legacy_task.get('repo_url'),
@@ -306,6 +310,63 @@ def _local_get_user_by_id(user_id: str) -> Optional[Dict]:
 class DatabaseOperations:
 
     @staticmethod
+    def is_supabase_enabled() -> bool:
+        return _USE_SUPABASE
+
+    @staticmethod
+    def export_local_db(user_id: str) -> Dict:
+        if _USE_SUPABASE:
+            raise RuntimeError('Supabase 模式下不支持本地数据库导出')
+        with _LOCAL_DB_LOCK:
+            db = _load_local_db()
+            projects = [p for p in db.get('projects', []) if p.get('user_id') == user_id]
+            tasks = [t for t in db.get('tasks', []) if t.get('user_id') == user_id]
+            user = (db.get('users', {}) or {}).get(user_id)
+            return {
+                'meta': db.get('meta', {}),
+                'user_id': user_id,
+                'user': user,
+                'projects': projects,
+                'tasks': tasks,
+            }
+
+    @staticmethod
+    def reset_local_db(user_id: str) -> Dict:
+        if _USE_SUPABASE:
+            raise RuntimeError('Supabase 模式下不支持本地数据库重置')
+
+        with _LOCAL_DB_LOCK:
+            db = _load_local_db()
+            db['projects'] = [p for p in db.get('projects', []) if p.get('user_id') != user_id]
+            db['tasks'] = [t for t in db.get('tasks', []) if t.get('user_id') != user_id]
+
+            users = db.get('users')
+            if isinstance(users, dict):
+                users.pop(user_id, None)
+                db['users'] = users
+
+            # 重算自增计数器，避免 ID 冲突
+            max_project_id = 0
+            for p in db.get('projects', []):
+                try:
+                    max_project_id = max(max_project_id, int(p.get('id') or 0))
+                except Exception:
+                    pass
+            max_task_id = 0
+            for t in db.get('tasks', []):
+                try:
+                    max_task_id = max(max_task_id, int(t.get('id') or 0))
+                except Exception:
+                    pass
+            db['meta'] = {
+                'project_id': max_project_id + 1,
+                'task_id': max_task_id + 1,
+            }
+
+            _save_local_db(db)
+            return {'status': 'success'}
+
+    @staticmethod
     def create_project(user_id: str, name: str, description: str, repo_url: str,
                       repo_name: str, repo_owner: str, settings: Dict = None) -> Dict:
         """创建新项目"""
@@ -359,7 +420,7 @@ class DatabaseOperations:
         if not _USE_SUPABASE:
             return _local_update_project(project_id, user_id, updates)
         try:
-            updates['updated_at'] = datetime.utcnow().isoformat()
+            updates['updated_at'] = _utc_now_iso()
             result = supabase.table('projects').update(updates).eq('id', project_id).eq('user_id', user_id).execute()
             return result.data[0] if result.data else None
         except Exception as e:
@@ -437,11 +498,11 @@ class DatabaseOperations:
             # 处理时间戳
             if 'status' in updates:
                 if updates['status'] == 'running' and 'started_at' not in updates:
-                    updates['started_at'] = datetime.utcnow().isoformat()
+                    updates['started_at'] = _utc_now_iso()
                 elif updates['status'] in ['completed', 'failed', 'cancelled'] and 'completed_at' not in updates:
-                    updates['completed_at'] = datetime.utcnow().isoformat()
+                    updates['completed_at'] = _utc_now_iso()
 
-            updates['updated_at'] = datetime.utcnow().isoformat()
+            updates['updated_at'] = _utc_now_iso()
             if not _USE_SUPABASE:
                 return _local_update_task(task_id, user_id, updates)
             result = supabase.table('tasks').update(updates).eq('id', task_id).eq('user_id', user_id).execute()
@@ -449,6 +510,18 @@ class DatabaseOperations:
         except Exception as e:
             logger.error(f"更新任务 {task_id} 失败：{e}")
             raise
+
+    @staticmethod
+    def update_task_execution_metadata(task_id: int, user_id: str, metadata_updates: Dict) -> Optional[Dict]:
+        """合并更新 execution_metadata（避免覆盖已有字段）"""
+        task = DatabaseOperations.get_task_by_id(task_id, user_id)
+        if not task:
+            return None
+        meta = task.get('execution_metadata')
+        if not isinstance(meta, dict):
+            meta = {}
+        meta.update(metadata_updates or {})
+        return DatabaseOperations.update_task(task_id, user_id, {'execution_metadata': meta})
 
     @staticmethod
     def add_chat_message(task_id: int, user_id: str, role: str, content: str) -> Optional[Dict]:
@@ -464,7 +537,7 @@ class DatabaseOperations:
             new_message = {
                 'role': role,
                 'content': content,
-                'timestamp': datetime.utcnow().isoformat()
+                'timestamp': _utc_now_iso()
             }
             chat_messages.append(new_message)
 
@@ -512,7 +585,7 @@ class DatabaseOperations:
                 }] if legacy_task.get('prompt') else [],
                 'execution_metadata': {
                     'legacy_id': legacy_task.get('id'),
-                    'migrated_at': datetime.utcnow().isoformat()
+                    'migrated_at': _utc_now_iso()
                 }
             }
 

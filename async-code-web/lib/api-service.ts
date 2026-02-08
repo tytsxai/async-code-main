@@ -284,6 +284,104 @@ export class ApiService {
         }
     }
 
+    static async getRepoBranches(
+        userId: string,
+        token: string,
+        repoUrl: string
+    ): Promise<{
+        status: 'success' | 'error'
+        repo?: {
+            name?: string
+            default_branch?: string
+            branches?: string[]
+        }
+        error?: string
+    }> {
+        const authHeader = await getAuthHeader(userId)
+        const response = await fetch(`${API_BASE}/repo-branches`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...authHeader,
+            },
+            body: JSON.stringify({
+                github_token: token,
+                repo_url: repoUrl
+            })
+        })
+
+        let data: any = null
+        try {
+            data = await response.json()
+        } catch {
+            data = null
+        }
+
+        if (response.ok) {
+            return data
+        }
+
+        return {
+            status: 'error',
+            repo: data?.repo,
+            error: data?.error || '获取分支失败'
+        }
+    }
+
+    static async exportLocalDb(userId: string): Promise<{ status: 'success' | 'error'; data?: any; error?: string }> {
+        const authHeader = await getAuthHeader(userId)
+        const response = await fetch(`${API_BASE}/local-db/export`, {
+            method: 'GET',
+            headers: {
+                ...authHeader,
+            },
+        })
+
+        let data: any = null
+        try {
+            data = await response.json()
+        } catch {
+            data = null
+        }
+
+        if (response.ok) {
+            return data
+        }
+
+        return {
+            status: 'error',
+            error: data?.error || '导出失败'
+        }
+    }
+
+    static async resetLocalDb(userId: string): Promise<{ status: 'success' | 'error'; error?: string }> {
+        const authHeader = await getAuthHeader(userId)
+        const response = await fetch(`${API_BASE}/local-db/reset`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...authHeader,
+            },
+            body: JSON.stringify({}),
+        })
+
+        let data: any = null
+        try {
+            data = await response.json()
+        } catch {
+            data = null
+        }
+
+        if (response.ok) {
+            return data
+        }
+
+        return {
+            status: 'error',
+            error: data?.error || '清空失败'
+        }
+    }
+
     static async getGitDiff(userId: string, taskId: number): Promise<string> {
         const authHeader = await getAuthHeader(userId)
         const response = await fetch(`${API_BASE}/git-diff/${taskId}`, {
@@ -300,8 +398,14 @@ export class ApiService {
 
     // 工具函数
     static parseGitHubUrl(url: string): { owner: string, repo: string } {
-        const match = url.match(/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?(?:\/|$)/)
-        if (!match) throw new Error('GitHub 地址无效')
-        return { owner: match[1], repo: match[2] }
+        const httpsMatch = url.match(/^https?:\/\/github\.com\/([^\/]+)\/([^\/]+?)(?:\.git)?\/?$/)
+        if (httpsMatch) {
+            return { owner: httpsMatch[1], repo: httpsMatch[2] }
+        }
+        const sshMatch = url.match(/^git@github\.com:([^\/]+)\/([^\/]+?)(?:\.git)?$/)
+        if (sshMatch) {
+            return { owner: sshMatch[1], repo: sshMatch[2] }
+        }
+        throw new Error('GitHub 地址无效')
     }
 }
