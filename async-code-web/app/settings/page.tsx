@@ -19,51 +19,32 @@ export default function SettingsPage() {
     const { user } = useAuth();
     const supabaseEnabled = isSupabaseConfigured();
     const [githubToken, setGithubToken] = useState("");
-    const [rememberToken, setRememberToken] = useState(false);
     const [tokenValidation, setTokenValidation] = useState<{status: string; user?: string; repo?: {name?: string; permissions?: {read?: boolean; write?: boolean; create_branches?: boolean; admin?: boolean}}; error?: string} | null>(null);
     const [isValidatingToken, setIsValidatingToken] = useState(false);
     const [repoUrl, setRepoUrl] = useState("https://github.com/ObservedObserver/streamlit-react");
 
-    // 初始化 GitHub Token（默认仅 sessionStorage；可选持久化到 localStorage）
+    // 初始化 GitHub Token（仅 sessionStorage），并清理历史 localStorage 键
     useEffect(() => {
         if (typeof window !== 'undefined') {
-            const savedRemember = localStorage.getItem('github-token-remember');
-            const remember = savedRemember === 'true';
-            setRememberToken(remember);
-
             const sessionToken = sessionStorage.getItem('github-token');
-            const localToken = remember ? localStorage.getItem('github-token') : null;
-            const token = sessionToken || localToken;
-            if (token) setGithubToken(token);
+            if (sessionToken) {
+                setGithubToken(sessionToken);
+            }
+            localStorage.removeItem('github-token');
+            localStorage.removeItem('github-token-remember');
         }
     }, []);
 
-    // GitHub 令牌变化时写入 sessionStorage；如选择“记住”则同步写入 localStorage
+    // GitHub 令牌变化时仅写入 sessionStorage
     useEffect(() => {
         if (typeof window !== 'undefined') {
             if (githubToken.trim()) {
                 sessionStorage.setItem('github-token', githubToken);
-                if (rememberToken) {
-                    localStorage.setItem('github-token', githubToken);
-                } else {
-                    localStorage.removeItem('github-token');
-                }
             } else {
                 sessionStorage.removeItem('github-token');
-                localStorage.removeItem('github-token');
             }
         }
-    }, [githubToken, rememberToken]);
-
-    useEffect(() => {
-        if (typeof window === 'undefined') return;
-        localStorage.setItem('github-token-remember', rememberToken ? 'true' : 'false');
-        if (!rememberToken) {
-            localStorage.removeItem('github-token');
-        } else if (githubToken.trim()) {
-            localStorage.setItem('github-token', githubToken);
-        }
-    }, [rememberToken, githubToken]);
+    }, [githubToken]);
 
     const handleValidateToken = async () => {
         if (!githubToken.trim() || !repoUrl.trim()) {
@@ -198,19 +179,11 @@ export default function SettingsPage() {
                                     placeholder="ghp_..."
                                     className="font-mono"
                                 />
-                                <label className="flex items-center gap-2 text-sm text-slate-700">
-                                    <input
-                                        type="checkbox"
-                                        checked={rememberToken}
-                                        onChange={(e) => setRememberToken(e.target.checked)}
-                                    />
-                                    记住令牌（仅此设备）
-                                </label>
                                 <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">
                                     <div className="flex items-start gap-2 text-blue-800">
                                         <Info className="h-4 w-4 mt-0.5 flex-shrink-0" />
                                         <div className="text-sm">
-                                        默认仅在当前会话中保存；启用“记住”会写入浏览器本地存储，用于访问仓库和创建 PR。
+                                        令牌仅在当前会话中保存（`sessionStorage`），关闭标签页后即清除，用于访问仓库和创建 PR。
                                         请确保令牌包含 <strong>repo</strong> 权限以获得完整功能。
                                         </div>
                                     </div>

@@ -9,5 +9,7 @@
 ## 风险提示
 
 - 本项目会在容器中运行代码代理，并可能克隆/修改第三方仓库，请确保只对你信任的仓库与目录执行。
+- GitHub Token 用于 clone / push / 创建 PR；前端默认仅在当前浏览器会话中保存，不会持久化到 `localStorage`。
+- 本地模式下导出的数据不包含 GitHub Token 等凭据字段，但你仍应避免分享包含任务内容、patch 或执行输出的敏感导出文件。
 - Codex 兼容性“特权模式”（`CODEX_PRIVILEGED=true`）会显著提升容器权限，可能带来宿主机风险；仅在必要时启用。
 - 不要将 `.env`、本地数据库（`server/local_db.json`）或任何 token/密钥提交到仓库。

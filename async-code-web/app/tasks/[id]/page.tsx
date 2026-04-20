@@ -54,13 +54,11 @@ export default function TaskDetailPage() {
 
     useEffect(() => {
         if (typeof window !== 'undefined') {
-            const savedRemember = localStorage.getItem('github-token-remember');
-            const remember = savedRemember === 'true';
-
             const sessionToken = sessionStorage.getItem('github-token');
-            const localToken = remember ? localStorage.getItem('github-token') : null;
-            const token = sessionToken || localToken;
-            if (token) setGithubToken(token);
+            if (sessionToken) setGithubToken(sessionToken);
+
+            localStorage.removeItem('github-token');
+            localStorage.removeItem('github-token-remember');
         }
     }, []);
 

@@ -108,7 +108,8 @@ CODEX_PRIVILEGED=true
 ## GitHub Token
 
 - Web「设置」页用于配置 GitHub Token（用于 clone/push/创建 PR）
-- 默认仅保存到 `sessionStorage`；勾选“记住”才写入 `localStorage`
+- GitHub Token 仅保存在当前会话（`sessionStorage`），不会持久化到 `localStorage`
+- 本地模式导出的数据不会包含 GitHub Token 或其他凭据字段
 
 ## 目录结构
 

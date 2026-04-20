@@ -74,8 +74,9 @@ CODEX_PRIVILEGED=true
 ## 4. GitHub Token（创建 PR）
 
 - 在 Web「设置」页配置 GitHub Token
-- 默认仅保存在当前会话（`sessionStorage`）；勾选“记住”才会写入 `localStorage`
+- GitHub Token 仅保存在当前会话（`sessionStorage`），关闭标签页后即清除
 - Token 用于：克隆仓库、推送分支、创建 PR
+- 本地模式导出的数据不包含 GitHub Token 或其他凭据字段
 
 ## 5. 常见问题
 

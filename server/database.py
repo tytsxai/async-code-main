@@ -322,10 +322,13 @@ class DatabaseOperations:
             projects = [p for p in db.get('projects', []) if p.get('user_id') == user_id]
             tasks = [t for t in db.get('tasks', []) if t.get('user_id') == user_id]
             user = (db.get('users', {}) or {}).get(user_id)
+            exported_user = dict(user) if isinstance(user, dict) else user
+            if isinstance(exported_user, dict):
+                exported_user.pop('github_token', None)
             return {
                 'meta': db.get('meta', {}),
                 'user_id': user_id,
-                'user': user,
+                'user': exported_user,
                 'projects': projects,
                 'tasks': tasks,
             }

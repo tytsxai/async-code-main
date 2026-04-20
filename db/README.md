@@ -41,6 +41,8 @@ CREATE TABLE public.users (
 - ✅ 安全存储 GitHub Token
 - ✅ JSONB 可扩展偏好设置
 
+> 说明：`github_token` 位于 `users` 表，仅用于服务端访问 GitHub；前端浏览器侧的 GitHub Token 默认为 session-only，本地模式导出也不会返回该字段。
+
 ### 2. Projects 表（`public.projects`）
 
 代表用户管理的 GitHub 仓库。

@@ -59,14 +59,11 @@ export default function Home() {
     // 初始化 GitHub 令牌和归档状态
     useEffect(() => {
         if (typeof window !== 'undefined') {
-            const savedRemember = localStorage.getItem('github-token-remember');
-            const remember = savedRemember === 'true';
-            setRememberToken(remember);
-
             const sessionToken = sessionStorage.getItem('github-token');
-            const localToken = remember ? localStorage.getItem('github-token') : null;
-            const token = sessionToken || localToken;
-            if (token) setGithubToken(token);
+            if (sessionToken) setGithubToken(sessionToken);
+
+            localStorage.removeItem('github-token');
+            localStorage.removeItem('github-token-remember');
 
             // 加载已归档的任务 ID
             const savedArchived = localStorage.getItem('archived-tasks');
@@ -159,22 +156,16 @@ export default function Home() {
         };
     }, [user?.id, selectedProject, customRepoUrl, projects, githubToken]);
 
-    // GitHub 令牌变化时写入 sessionStorage；如选择“记住”则同步写入 localStorage
+    // GitHub 令牌变化时仅写入 sessionStorage
     useEffect(() => {
         if (typeof window !== 'undefined') {
             if (githubToken.trim()) {
                 sessionStorage.setItem('github-token', githubToken);
-                if (rememberToken) {
-                    localStorage.setItem('github-token', githubToken);
-                } else {
-                    localStorage.removeItem('github-token');
-                }
             } else {
                 sessionStorage.removeItem('github-token');
-                localStorage.removeItem('github-token');
             }
         }
-    }, [githubToken, rememberToken]);
+    }, [githubToken]);
 
     // 轮询运行中任务的状态
     useEffect(() => {
