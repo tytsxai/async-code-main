@@ -1,0 +1,54 @@
+# Async Code Agent
+
+> Self-hosted platform for running multiple AI coding agents (Claude Code, OpenAI Codex CLI, and extensible to others) **in parallel** against the same repository. Codex-style web UI shows task queue, agent logs, git diffs (file-level before/after) for every run. After review, push the saved patch to a fresh branch and open a Pull Request — all from the browser. Each task runs in an isolated Docker container.
+
+Use case: when you would otherwise have to *serially* try Claude → check → try Codex → check → compare, this lets you fire both (or more) at once against an isolated copy and pick the winner.
+
+## Key docs
+
+- [README.md](README.md): Overview, two storage modes (Supabase / local JSON), agent auth setup, GitHub token, dev paths.
+- [CONTRIBUTING.md](CONTRIBUTING.md): How to contribute.
+- [docker-compose.yml](docker-compose.yml): One-command bring-up.
+- `async-code-web/`: Next.js + TypeScript frontend.
+- `server/`: Flask backend.
+- `db/`: Supabase init SQL.
+
+## What this platform does
+
+- **Parallel agent runs**: same task → multiple agents → side-by-side diff comparison
+- **Codex-style UI**: task list, real-time log streaming, per-task status polling
+- **File-level diff viewer**: git diff + before/after, scoped per file
+- **One-click PR**: clones the repo, applies the saved patch on a new branch, pushes, opens a PR via your GitHub token
+- **Two storage modes**:
+  - **Supabase** (recommended) — multi-user, persistent, auth via Supabase
+  - **Local JSON** — single-machine, fast onboarding, no signup
+- **Isolated execution** — each task runs in its own Docker container (no env contamination between runs)
+- **Optional host `~/.codex` mount** for users who want the container to inherit their Codex CLI credentials
+- **Privileged Codex compatibility mode** off by default — explicitly opt-in with `CODEX_PRIVILEGED=true`
+
+## What this platform does NOT do
+
+- ❌ Run hosted as a SaaS — bring your own host
+- ❌ Ship credentials to a Claude/OpenAI proxy — agents talk directly to their providers from inside the container
+- ❌ Auto-merge PRs — you push the branch and review on GitHub
+- ❌ Run on machines without Docker
+- ❌ Persist GitHub tokens to long-lived storage — token lives in `sessionStorage` only
+
+## Common questions
+
+- **Do I need Supabase?** No. Local mode (`SUPABASE_DISABLED=true` + `NEXT_PUBLIC_SUPABASE_DISABLED=true`) writes to `server/local_db.json` and uses an `X-User-ID` header. Supabase is for multi-user persistent setups.
+- **Does my GitHub token leak?** No — it lives in browser `sessionStorage` only, never persists, never makes it into local-mode exports.
+- **Can I add new agents (Aider / Cline / custom)?** Yes — the agent-runner abstraction is intentionally pluggable; see the `server/` agent integration layer.
+- **Why Docker per task?** Strong isolation: each agent run gets a fresh container with the cloned repo, so a bad agent run can't pollute later runs.
+- **Two agents on the same task — won't they fight?** They run in separate containers against separate repo clones. Each produces its own diff/patch; you compare in the UI and pick which one to PR.
+
+## Repository
+
+- GitHub: https://github.com/tytsxai/async-code-main
+- License: Apache-2.0
+- Stack: Next.js + TypeScript (frontend), Flask (backend), Docker, Supabase (optional)
+- Author: tytsxai
+
+## Useful search phrases
+
+- async code agent, parallel AI coding agents, Claude Code parallel runner, Codex CLI parallel runner, run Claude and Codex side by side, AI coding agent comparison UI, self-hosted AI coding platform, AI 代码代理并行执行, Claude Code 并行执行, Codex CLI 并行任务, 多代理对比 AI 编程, AI 编程 PR 自动化, Docker isolated AI coding agent, alternative to Devin self-hosted, alternative to Cognition self-hosted

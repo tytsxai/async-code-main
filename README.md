@@ -1,6 +1,12 @@
-# Async Code Agent
+# Async Code Agent · 自托管 AI 代码代理并行执行平台
 
-一个用于“并行跑代码代理”的自托管平台：通过 Web UI 同时运行 Claude Code 与 Codex CLI（或其它代理），统一收集执行日志与代码变更，并支持一键创建 Pull Request。
+[![Release](https://img.shields.io/github/v/release/tytsxai/async-code-main)](https://github.com/tytsxai/async-code-main/releases) · [llms.txt](llms.txt) · [Changelog](CHANGELOG.md) · [Issues](https://github.com/tytsxai/async-code-main/issues) · [License: Apache-2.0](LICENSE)
+
+> **关键词**:AI 代码代理并行执行 · Claude Code 并行执行 · Codex CLI 并行任务 · 多代理对比 AI 编程 · AI 编程 PR 自动化 · Docker 隔离 AI 编程 · 自托管 AI 编码平台
+>
+> **Keywords**: parallel AI coding agents · run Claude and Codex side by side · AI coding agent comparison UI · self-hosted AI coding platform · Docker isolated AI coding agent · alternative to Devin self-hosted · alternative to Cognition self-hosted
+
+一个用于"并行跑代码代理"的自托管平台:通过 Web UI 同时运行 Claude Code 与 Codex CLI(或其它代理),统一收集执行日志与代码变更,并支持一键创建 Pull Request。**核心价值是「并行 + 对比」**:同一个任务用不同代理跑,看 diff 选赢家,比串行试错快几倍。
 
 ![async-code-ui](https://github.com/user-attachments/assets/e490c605-681a-4abb-a440-323e15f1a90d)
 
@@ -133,6 +139,26 @@ npm run dev
 cd ../server
 python3 main.py
 ```
+
+## ❓ FAQ
+
+**Q:必须用 Supabase 吗?**
+不必。`SUPABASE_DISABLED=true` + `NEXT_PUBLIC_SUPABASE_DISABLED=true` 切到本地模式,写 `server/local_db.json`,用 `X-User-ID` 头做用户隔离。
+
+**Q:GitHub Token 会不会泄漏?**
+不会持久化。只在 `sessionStorage` 里;关浏览器就没了;本地模式导出也不包含 token。
+
+**Q:能加新代理吗(Aider / Cline / 自研)?**
+能。agent-runner 抽象是**有意做成插件式**的,看 `server/` 里的代理接入层。
+
+**Q:为什么每个任务都开 Docker 容器?**
+强隔离。坏的代理跑出来的副作用不会污染下次。
+
+**Q:同一个任务跑两个代理会冲突吗?**
+不会。每个跑在独立容器 + 独立 repo clone 里,各自出 patch,你在 UI 里选哪个 PR。
+
+**Q:CODEX_PRIVILEGED=true 是什么?要不要开?**
+Codex 兼容性"特权模式"开关,默认**关**。除非你的代理需要更高权限,否则别开。
 
 ## 贡献
 
